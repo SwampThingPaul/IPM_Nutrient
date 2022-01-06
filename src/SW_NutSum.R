@@ -1,0 +1,235 @@
+## 
+## 
+## usethis::use_readme_rmd(open = rlang::is_interactive()); #one and done
+## Code was compiled by Paul Julian
+## contact info: pjulian.sccf.org
+
+## BAD ## https://www.tidyverse.org/articles/2017/12/workflow-vs-script/
+#Clears Everything...start fresh.
+rm(list=ls(all=T));cat("\014");dev.off()
+
+#Libraries
+library(AnalystHelper);#devtools::install_github("SwampThingPaul/AnalystHelper")
+library(plyr)
+library(reshape2)
+
+# GIS libraries 
+# library(sp)
+library(sp)
+library(rgdal)
+library(rgeos)
+library(raster)
+library(tmap)
+#Paths
+wd="C:/Julian_LaCie/_GitHub/IPM_Nutrient"
+
+paths=paste0(wd,c("/Plots/","/Export/","/Data/","/GIS","/src/","/_documents/"))
+# Folder.Maker(paths);#One and done. Creates folders in working directory.
+plot.path=paths[1]
+export.path=paths[2]
+data.path=paths[3]
+GIS.path=paths[4]
+
+GIS.path.gen=paste0(dirname(dirname(wd)),"/_GISData")
+
+nad83.pro=CRS("+init=epsg:4269")
+utm17=CRS("+init=epsg:26917")
+
+tmap_mode("view")
+
+# -------------------------------------------------------------------------
+wmd.mon=spTransform(readOGR(paste0(GIS.path.gen,"/SFWMD_Monitoring_20200221"),"Environmental_Monitoring_Stations"),wkt(utm17))
+
+wq.sites=subset(wmd.mon,ACTIVITY_S=="Surface Water Grab"&STATUS=="Active")
+sites=data.frame(SITE=c("TIN13700","TIN16100",
+                        "PALMOUT","OISLAND",
+                        "RITTAE2","LZ25A","PELBAY3",
+                        "S8","S150","S7"),
+                 Region=c(rep("NW.Lit",2),
+                          rep("W.Lit",2),
+                          rep("S.Lit",3),
+                          rep("Everglades",3)))
+wq.sites.sub=subset(wq.sites,SITE%in%sites$SITE)
+
+tm_shape(wq.sites.sub)+tm_dots()
+
+wq.param=data.frame(Test.Number=c(16,18,20,21,23,25,80,89,100),
+                    Param=c("TSS","NOx","NH4","TKN","OP","TP","TN","DOC","TOC"))
+dates=date.fun(c("2011-05-01","2021-04-30"))
+wq.dat=data.frame()
+for(i in 1:length(sites$SITE)){
+  tmp=DBHYDRO_WQ(dates[1],dates[2],sites$SITE[i],wq.param$Test.Number)
+  wq.dat=rbind(tmp,wq.dat)
+  print(i)
+}     
+wq.dat=merge(wq.dat,sites,by.x="Station.ID",by.y="SITE")
+wq.dat=merge(wq.dat,wq.param,"Test.Number")
+wq.dat$month=as.numeric(format(wq.dat$Date.EST,"%m"))
+wq.dat$CY=as.numeric(format(wq.dat$Date.EST,"%Y"))
+wq.dat$WY=WY(wq.dat$Date.EST)
+
+wq.dat.xtab=dcast(wq.dat,Date.EST+Station.ID+Region+WY~Param,value.var="HalfMDL",mean)
+wq.dat.xtab$TN=with(wq.dat.xtab,TN_Combine(NOx,TKN,TN))
+wq.dat.xtab$DIN=with(wq.dat.xtab,NH4+NOx)
+
+# Reversal Evaluation
+wq.dat.xtab$TPReversal=with(wq.dat.xtab,ifelse(is.na(OP)==T|is.na(TP)==T,0,ifelse(OP>(TP*1.3),1,0)));# Reversals identified as 1 reversals consistent with TP rule evaluation
+wq.dat.xtab$TNReversal=with(wq.dat.xtab,ifelse(is.na(DIN)==T|is.na(TN)==T,0,ifelse(DIN>(TN*1.3),1,0)));
+
+sum(wq.dat.xtab$TNReversal,na.rm=T)
+sum(wq.dat.xtab$TPReversal,na.rm=T)
+
+par(family="serif",oma=c(1,1,1,1),mar=c(4,4,1,1))
+layout(matrix(1:2,1,2,byrow=F))
+plot(TN~DIN,wq.dat.xtab,ylab="TN (mg L\u207B\u00b9)",xlab="DIN (mg L\u207B\u00b9)",pch=21,bg=ifelse(TNReversal==1,"dodgerblue1",NA),col=adjustcolor("grey",0.8));abline(0,1,col="dodgerblue1")
+plot(TP~OP,wq.dat.xtab,ylab="TP (mg L\u207B\u00b9)",xlab="SRP (mg L\u207B\u00b9)",pch=21,bg=ifelse(TPReversal==1,"red",NA),col=adjustcolor("grey",0.8));abline(0,1,col="red")
+
+dev.off()
+
+idvars=c("Date.EST","Station.ID","Region","WY")
+param.vars=c("TP","TN","OP","DIN")
+wq.dat.melt=melt(wq.dat.xtab[,c(idvars,param.vars)],id.vars=idvars)
+wq.dat.melt=subset(wq.dat.melt,is.na(value)==F)
+wq.dat.melt$season=FL.Hydroseason(wq.dat.melt$Date.EST)
+
+samp.size=dcast(wq.dat.melt,Station.ID+WY+variable~season,value.var = "value",fun.aggregate = function(x)N.obs(x))
+samp.size$TSamp=rowSums(samp.size[,c("A_Wet","B_Dry")],na.rm=T)
+samp.size$sea.screen=with(samp.size, ifelse(A_Wet>0&B_Dry>0&TSamp>=4,1,0))
+
+vars=c("Station.ID", "WY", "variable","sea.screen")
+wq.dat.melt=merge(wq.dat.melt,samp.size[,vars],c("Station.ID","WY","variable"))
+AGM.dat=ddply(subset(wq.dat.melt,sea.screen==1),c("Station.ID","Region","WY","variable"),summarise,
+      GM=exp(mean(log(value),na.rm=T)),N.val=N.obs(value))
+
+AGM.dat$Region=factor(AGM.dat$Region,levels=c("NW.Lit","W.Lit","S.Lit","Everglades"))
+AGM.dat$Station.ID=factor(AGM.dat$Station.ID,levels=sites$SITE)
+
+## Explore
+boxplot(GM~Station.ID,subset(AGM.dat,variable=="TN"),outline=F)
+boxplot(GM~Region,subset(AGM.dat,variable=="TN"),outline=F)
+
+boxplot(GM~Station.ID,subset(AGM.dat,variable=="TP"),outline=F)
+boxplot(GM~Region,subset(AGM.dat,variable=="TP"),outline=F)
+
+boxplot(GM~Station.ID,subset(AGM.dat,variable=="DIN"),outline=F)
+boxplot(GM~Region,subset(AGM.dat,variable=="DIN"),outline=F)
+
+boxplot(GM~Station.ID,subset(AGM.dat,variable=="OP"),outline=F)
+boxplot(GM~Region,subset(AGM.dat,variable=="OP"),outline=F)
+
+
+cols=c(adjustcolor(wesanderson::wes_palette("Zissou1",4,"continuous"),0.5))
+levels.var.labs=c("LOK\nNW Littoral","LOK\nE Littoral","LOK\nS Littoral","Everglades\nInflow")
+# png(filename=paste0(plot.path,"RegionComp.png"),width=6.5,height=4.5,units="in",res=200,type="windows",bg="white")
+par(family="serif",mar=c(1,3.5,0.5,0.75),oma=c(3,1,1,0.5));
+layout(matrix(c(1:4),2,2,byrow=T))
+
+ylim.val=c(0.5,2);by.y=0.5;ymaj=seq(ylim.val[1],ylim.val[2],by.y);ymin=seq(ylim.val[1],ylim.val[2],by.y/2)
+boxplot(GM~Region,subset(AGM.dat,variable=="TN"),outline=F,axes=F,ann=F,col=cols,ylim=ylim.val)
+axis_fun(1,1:4,1:4,NA)
+axis_fun(2,ymaj,ymin,format(ymaj))
+box(lwd=1)
+mtext(side=2,line=2.5,"TN AGM (mg L\u207B\u00B9)")
+mtext(side=3,adj=0,"Water Year 2012 - 2021")
+
+ylim.val=c(0,0.2);by.y=0.05;ymaj=seq(ylim.val[1],ylim.val[2],by.y);ymin=seq(ylim.val[1],ylim.val[2],by.y/2)
+boxplot(GM~Region,subset(AGM.dat,variable=="TP"),outline=F,axes=F,ann=F,col=cols,ylim=ylim.val)
+axis_fun(1,1:4,1:4,NA)
+axis_fun(2,ymaj,ymin,format(ymaj*1000))
+box(lwd=1)
+mtext(side=2,line=2.5,"TP AGM (\u03BCg L\u207B\u00B9)")
+
+ylim.val=c(0,0.3);by.y=0.1;ymaj=seq(ylim.val[1],ylim.val[2],by.y);ymin=seq(ylim.val[1],ylim.val[2],by.y/2)
+boxplot(GM~Region,subset(AGM.dat,variable=="DIN"),outline=F,axes=F,ann=F,col=cols,ylim=ylim.val)
+axis_fun(1,1:4,1:4,levels.var.labs,padj=1,line=-1,cex=0.75)
+axis_fun(2,ymaj,ymin,format(ymaj))
+box(lwd=1)
+mtext(side=2,line=2.5,"DIN AGM (mg L\u207B\u00B9)")
+
+ylim.val=c(0,0.08);by.y=0.02;ymaj=seq(ylim.val[1],ylim.val[2],by.y);ymin=seq(ylim.val[1],ylim.val[2],by.y/2)
+boxplot(GM~Region,subset(AGM.dat,variable=="OP"),outline=F,axes=F,ann=F,col=cols,ylim=ylim.val)
+axis_fun(1,1:4,1:4,levels.var.labs,padj=1,line=-1,cex=0.75)
+axis_fun(2,ymaj,ymin,format(ymaj*1000))
+box(lwd=1)
+mtext(side=2,line=2.5,"SRP AGM (\u03BCg L\u207B\u00B9)")
+mtext(side=1,line=1.5,outer=T,"Region")
+dev.off()
+
+AGM.dat=merge(AGM.dat,
+              data.frame(Region=c("NW.Lit","W.Lit","S.Lit","Everglades"),cols=cols),
+              "Region")
+cols=ddply(AGM.dat,c("Station.ID","Region","cols"),summarise,N.val=N.obs(Station.ID))
+# png(filename=paste0(plot.path,"SiteComp.png"),width=6.5,height=4.5,units="in",res=200,type="windows",bg="white")
+par(family="serif",mar=c(1,3.5,0.5,0.75),oma=c(4,1,1,0.5));
+layout(matrix(c(1:4),2,2,byrow=T))
+
+ylim.val=c(1,2);by.y=0.5;ymaj=seq(ylim.val[1],ylim.val[2],by.y);ymin=seq(ylim.val[1],ylim.val[2],by.y/2)
+x=boxplot(GM~Station.ID,subset(AGM.dat,variable=="TN"),outline=F,axes=F,ann=F,col=cols$cols,ylim=ylim.val)
+axis_fun(1,1:10,1:10,NA)
+axis_fun(2,ymaj,ymin,format(ymaj))
+box(lwd=1)
+mtext(side=2,line=2.5,"TN AGM (mg L\u207B\u00B9)")
+mtext(side=3,adj=0,"Water Year 2012 - 2021")
+
+ylim.val=c(0,0.2);by.y=0.05;ymaj=seq(ylim.val[1],ylim.val[2],by.y);ymin=seq(ylim.val[1],ylim.val[2],by.y/2)
+boxplot(GM~Station.ID,subset(AGM.dat,variable=="TP"),outline=F,axes=F,ann=F,col=cols$cols,ylim=ylim.val)
+axis_fun(1,1:10,1:10,NA)
+axis_fun(2,ymaj,ymin,format(ymaj*1000))
+box(lwd=1)
+mtext(side=2,line=2.5,"TP AGM (\u03BCg L\u207B\u00B9)")
+
+ylim.val=c(0,0.3);by.y=0.1;ymaj=seq(ylim.val[1],ylim.val[2],by.y);ymin=seq(ylim.val[1],ylim.val[2],by.y/2)
+boxplot(GM~Station.ID,subset(AGM.dat,variable=="DIN"),outline=F,axes=F,ann=F,col=cols$cols,ylim=ylim.val)
+axis_fun(1,1:10,1:10,cols$Station.ID,las=2,cex=0.75)
+axis_fun(2,ymaj,ymin,format(ymaj))
+box(lwd=1)
+mtext(side=2,line=2.5,"DIN AGM (mg L\u207B\u00B9)")
+
+ylim.val=c(0,0.08);by.y=0.02;ymaj=seq(ylim.val[1],ylim.val[2],by.y);ymin=seq(ylim.val[1],ylim.val[2],by.y/2)
+boxplot(GM~Station.ID,subset(AGM.dat,variable=="OP"),outline=F,axes=F,ann=F,col=cols$cols,ylim=ylim.val)
+axis_fun(1,1:10,1:10,cols$Station.ID,las=2,cex=0.75)
+axis_fun(2,ymaj,ymin,format(ymaj*1000))
+box(lwd=1)
+mtext(side=2,line=2.5,"SRP AGM (\u03BCg L\u207B\u00B9)")
+mtext(side=1,line=2,outer=T,"Site")
+dev.off()
+
+library(flextable)
+
+station.mean=dcast(AGM.dat,Region+Station.ID~variable,value.var="GM",mean)
+station.mean[,c("TP","OP")]=station.mean[,c("TP","OP")]*1000
+
+station.mean%>%
+  flextable()%>%
+  merge_v(1)%>%
+  fix_border_issues()%>%
+  colformat_double(j=c(3,5),digits=1)%>%
+  colformat_double(j=c(4,6),digits=2)%>%
+  set_header_labels("Station.ID"="Station Name",
+                    "TP"="TP\n(\u03BCg L\u207B\u00B9)",
+                    "OP"="SRP\n(\u03BCg L\u207B\u00B9)",
+                    "TN"="TN\n(mg L\u207B\u00B9)",
+                    "DIN"="DIN\n(mg L\u207B\u00B9)")%>%
+  align(j=3:6,align="center",part="all")%>%
+  padding(padding=1,part="all")%>%
+  font(fontname="Times New Roman",part="all")%>%
+  bold(part="header")%>%
+  footnote(j=1,part="header",ref_symbols = "",value=as_paragraph("Mean annual geometric mean concentration with greater than 4 samples per year and atleast one sample in wet and dry season"))
+
+
+region.mean=dcast(AGM.dat,Region~variable,value.var="GM",mean)
+region.mean[,c("TP","OP")]=region.mean[,c("TP","OP")]*1000
+
+region.mean%>%
+  flextable()%>%
+  colformat_double(j=c(2,4),digits=1)%>%
+  colformat_double(j=c(3,5),digits=2)%>%
+  set_header_labels("TP"="TP\n(\u03BCg L\u207B\u00B9)",
+                    "OP"="SRP\n(\u03BCg L\u207B\u00B9)",
+                    "TN"="TN\n(mg L\u207B\u00B9)",
+                    "DIN"="DIN\n(mg L\u207B\u00B9)")%>%
+  align(j=2:5,align="center",part="all")%>%
+  padding(padding=1,part="all")%>%
+  font(fontname="Times New Roman",part="all")%>%
+  bold(part="header")%>%
+  footnote(j=1,part="header",ref_symbols = "",value=as_paragraph("Mean annual geometric mean concentration with greater than 4 samples per year and atleast one sample in wet and dry season"))
