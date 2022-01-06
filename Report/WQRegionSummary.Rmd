@@ -247,12 +247,14 @@ mtext(side=1,line=2,outer=T,"Site")
 station.mean=dcast(AGM.dat,Region+Station.ID~variable,value.var="GM",mean)
 station.mean[,c("TP","OP")]=station.mean[,c("TP","OP")]*1000
 
+std_border=officer::fp_border(color = "grey", style = "solid", width = 0.5)
+
 station.mean%>%
   flextable()%>%
   merge_v(1)%>%
   fix_border_issues()%>%
   valign(j=1,valign="top")%>%
-  hline(i=c(2,4,7))%>%
+  hline(i=c(2,4,7),border=std_border)%>%
   colformat_double(j=c(3,5),digits=1)%>%
   colformat_double(j=c(4,6),digits=2)%>%
   set_header_labels("Station.ID"="Station Name",
